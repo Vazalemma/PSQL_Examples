@@ -1,0 +1,170 @@
+CREATE INDEX idx_Kaup_kauba_kood ON Kaup (kauba_kood);
+CREATE INDEX idx_Isik_isik_id ON Isik (isik_id);
+CREATE INDEX idx_Amet_ameti_kood ON Amet (ameti_kood);
+CREATE INDEX idx_Klient_isik_id ON Klient (isik_id);
+CREATE INDEX idx_Tootaja_isik_id ON Tootaja (isik_id);
+CREATE INDEX idx_Isiku_seisundi_liik_kood ON Isiku_seisundi_liik (isiku_seisundi_liigi_kood);
+CREATE INDEX idx_Kliendi_seisundi_liik_kood ON Kliendi_seisundi_liik (kliendi_seisundi_liigi_kood);
+CREATE INDEX idx_Tootaja_seisundi_liik_kood ON Tootaja_seisundi_liik (tootaja_seisund_liigi_kood);
+
+
+
+
+
+
+CREATE OR REPLACE FUNCTION f_uus_kaup() RETURNS trigger AS $$
+BEGIN
+RAISE EXCEPTION 'Ei saa lisada kaupa, mille hind on suurem kui 9999.99!';
+RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION f_tyhista_kaup() RETURNS trigger AS $$
+DECLARE
+m_kauba_seisundi_liigi_kood varchar(12);
+BEGIN
+SELECT seisundi_kood INTO m_kauba_seisundi_liigi_kood FROM Kaup WHERE
+kauba_kood=OLD.kauba_kood FOR UPDATE;
+IF (m_kauba_seisundi_liigi_kood=2) THEN
+RAISE EXCEPTION 'Ei saa tühistada vastuvõtuaega, mis on aktiivne! Muuda kõigepealt kaup mitteaktiivseks!';
+ELSE
+RETURN OLD;
+END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp;
+
+CREATE OR REPLACE FUNCTION f_tyhista_kaup() RETURNS trigger AS $$
+BEGIN
+RAISE EXCEPTION 'Ei saa tühistada kaupa, mida ei ole aktiivselt laos';
+RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+See vaade leiab kõik kaubad, mis on märgitud seisundiga aktiivne või mitteaktiivne
+See vaade leiab andmed kaupade seisundite kohta, mis on koondatud, et näha, kui palju on erinevaid kaupu mingis seisundis.
+See vaade leiad andmed kõigi kaupade kõige tähtsamate veergude kohta
+See vaade leiad andmed kõigi kaupade andmete kohta, mis võivad kliendile tähtsad olla
+
+
+
+
+
+
+
+
+
+
+
+
+CREATE OR REPLACE VIEW Aktiivsed_mitteaktivsed_kaubad WITH (security_barrier) AS
+SELECT kaup.kauba_kood, kaup.kauba_nimetus AS kauba_nimetus,
+tyyp.tyybi_nimetus AS kauba_tyyp,
+kauba_seisundi_liik.kauba_seisundi_liigi_nimetus AS seisund,
+kaup.hind FROM kauba_seisundi_liik
+JOIN (kaup JOIN Tyyp ON tyyp.tyybi_kood=kaup.palli_tyybi_kood)
+ON kauba_seisundi_liik.kauba_seisundi_liigi_kood::text = kaup.kauba_seisundi_liigi_kood::text
+WHERE kauba_seisundi_liik.kauba_seisundi_liigi_nimetus::text = ANY (ARRAY['aktiivne'::character varying, 'mitteaktiivne'::character varying]::text[]);
+
+CREATE OR REPLACE VIEW Koondaruanne WITH (security_barrier) AS
+SELECT kauba_seisundi_liik.kauba_seisundi_liigi_kood AS seisundi_kood,
+upper(kauba_seisundi_liik.kauba_seisundi_liigi_nimetus::text) AS seisundi_nimetus,
+count(kaup.kauba_kood) AS arv FROM kauba_seisundi_liik
+LEFT JOIN kaup ON kauba_seisundi_liik.kauba_seisundi_liigi_kood::text = kaup.kauba_seisundi_liigi_kood::text
+GROUP BY kauba_seisundi_liik.kauba_seisundi_liigi_kood, (upper(kauba_seisundi_liik.kauba_seisundi_liigi_nimetus::text))
+ORDER BY (count(kaup.kauba_kood)) DESC, (upper(kauba_seisundi_liik.kauba_seisundi_liigi_nimetus::text));
+
+CREATE OR REPLACE VIEW Vaata_kaupu WITH (security_barrier) AS
+SELECT kaup.kauba_kood, kaup.kauba_nimetus AS kauba_nimetus, tyyp.tyybi_nimetus AS kauba_tyyp,
+kauba_seisundi_liik.kauba_seisundi_liigi_nimetus AS seisund, kaup.hind FROM kauba_seisundi_liik
+JOIN (kaup JOIN tyyp ON tyyp.tyybi_kood=kaup.palli_tyybi_kood)
+ON kauba_seisundi_liik.kauba_seisundi_liigi_kood::text = kaup.kauba_seisundi_liigi_kood::text;
+
+CREATE OR REPLACE VIEW Vaata_kaupu_detailselt WITH (security_barrier) AS
+SELECT kaup.kauba_kood, kaup.kauba_nimetus AS kauba_nimetus, kaup.kauba_reg_aeg AS registreerimisaeg,
+concat_ws(' '::text, isik.eesnimi, isik.perenimi, isik.e_mail) AS registreerija, kaup.hind,
+kaup.kauba_kirjeldus AS kirjeldus, varv.varvi_nimetus AS varv, tyyp.tyybi_nimetus AS kauba_tyyp,
+suurus.suuruse_nimetus AS suurus, materjal.materjali_nimetus AS materjal FROM isik
+JOIN (varv JOIN (tyyp JOIN (suurus JOIN (materjal JOIN kaup ON materjal.materjali_kood::text = kaup.palli_materjali_kood::text)
+ON suurus.suuruse_kood::text = kaup.palli_suuruse_kood::text) ON tyyp.tyybi_kood::text = kaup.palli_tyybi_kood::text)
+ON varv.varvi_kood::text = kaup.palli_varvi_kood::text) ON isik.isik_id = kaup.registreerija_id;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+CREATE OR REPLACE FUNCTION f_muuda_kaup_aktiivseks
+(p_kauba_kood Kaup.kauba_kood%TYPE) RETURNS VOID AS $$
+UPDATE Kaup SET kauba_seisundi_liigi_kood=2
+WHERE kauba_kood=p_kauba_kood;
+$$ LANGUAGE SQL SECURITY DEFINER
+SET search_path=public, pg_temp;
+
+CREATE OR REPLACE FUNCTION f_muuda_kaup_mitteaktiivseks
+(p_kauba_kood Kaup.kauba_kood%TYPE) RETURNS VOID AS $$
+UPDATE Kaup SET kauba_seisundi_liigi_kood=3
+WHERE kauba_kood=p_kauba_kood;
+$$ LANGUAGE SQL SECURITY DEFINER
+SET search_path=public, pg_temp;
+
+CREATE OR REPLACE FUNCTION f_muuda_kaup
+(p_kauba_kood_vana Kaup.kauba_kood%TYPE,
+p_kauba_kood_uus Kaup.kauba_kood%TYPE,
+p_kauba_nimetus Kaup.kauba_nimetus%TYPE,
+p_kauba_kirjeldus Kaup.kauba_kirjeldus%TYPE,
+p_palli_materjali_kood Kaup.palli_materjali_kood%TYPE,
+p_palli_varvi_kood Kaup.palli_varvi_kood%TYPE,
+p_palli_tyybi_kood Kaup.palli_tyybi_kood%TYPE,
+p_palli_suuruse_kood Kaup.palli_suuruse_kood%TYPE,
+p_hind Kaup.hind%TYPE) RETURNS VOID AS $$
+UPDATE Kaup SET kauba_kood=p_kauba_kood_uus,
+kauba_nimetus=p_kauba_nimetus, hind=p_hind, kauba_kirjeldus=p_kauba_kirjeldus,
+palli_materjali_kood=p_palli_materjali_kood, palli_varvi_kood=p_palli_varvi_kood,
+palli_tyybi_kood=p_palli_tyybi_kood, palli_suuruse_kood=p_palli_suuruse_kood
+WHERE kauba_kood=p_kauba_kood_vana;
+$$ LANGUAGE SQL SECURITY DEFINER
+SET search_path=public, pg_temp;
+
+CREATE OR REPLACE FUNCTION f_lisa_kaup
+(p_kauba_kood Kaup.kauba_kood%TYPE,
+p_kauba_nimetus Kaup.kauba_nimetus%TYPE,
+p_kauba_kirjeldus Kaup.kauba_kirjeldus%TYPE,
+p_registreerija_id Kaup.registreerija_id%TYPE,
+p_palli_materjali_kood Kaup.palli_materjali_kood%TYPE,
+p_palli_varvi_kood Kaup.palli_varvi_kood%TYPE,
+p_palli_tyybi_kood Kaup.palli_tyybi_kood%TYPE,
+p_palli_suuruse_kood Kaup.palli_suuruse_kood%TYPE,
+p_hind Kaup.hind%TYPE) RETURNS Kaup.kauba_kood%TYPE AS $$
+INSERT INTO Kaup(kauba_kood, kauba_nimetus, kauba_kirjeldus, registreerija_id,
+palli_materjali_kood, palli_varvi_kood, palli_tyybi_kood, palli_suuruse_kood, hind)
+VALUES (p_kauba_kood, p_kauba_nimetus, p_kauba_kirjeldus, p_registreerija_id,
+p_palli_materjali_kood, p_palli_varvi_kood, p_palli_tyybi_kood, p_palli_suuruse_kood, p_hind)
+ON CONFLICT DO NOTHING RETURNING kauba_kood;
+$$ LANGUAGE SQL SECURITY DEFINER SET search_path=public, pg_temp;
